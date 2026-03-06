@@ -27,6 +27,250 @@ app.use(express.json());
 // Multer setup for image uploads (memory storage)
 const upload = multer({ storage: multer.memoryStorage() });
 
+// --- DELIVERY & GEOLOCATION HELPERS ---
+const STORE_COORDS = { lat: 28.3839, lng: 76.7695 }; // Kamlesh Suits, PIN 122504
+
+// Precise PIN code → coordinate mapping (expanded coverage)
+const PIN_COORDS = {
+  // ── STORE AREA ──────────────────────────────────────────
+  "122504": { lat: 28.3839, lng: 76.7695 },
+  "122506": { lat: 28.3600, lng: 76.7900 },
+
+  // ── GURGAON / GURUGRAM ──────────────────────────────────
+  "122001": { lat: 28.4595, lng: 77.0266 },
+  "122002": { lat: 28.4717, lng: 77.0718 },
+  "122003": { lat: 28.4450, lng: 77.0450 },
+  "122004": { lat: 28.4950, lng: 77.0800 },
+  "122006": { lat: 28.4800, lng: 77.0950 },
+  "122007": { lat: 28.4150, lng: 77.0600 },
+  "122008": { lat: 28.5050, lng: 77.0750 },
+  "122009": { lat: 28.4300, lng: 76.9800 },
+  "122010": { lat: 28.4600, lng: 76.9900 },
+  "122011": { lat: 28.5200, lng: 77.0700 },
+  "122015": { lat: 28.4750, lng: 77.0250 },
+  "122016": { lat: 28.4500, lng: 77.0500 },
+  "122017": { lat: 28.4282, lng: 77.0423 },
+  "122018": { lat: 28.4089, lng: 76.9926 },
+  "122051": { lat: 28.4200, lng: 77.0550 },
+  "122052": { lat: 28.4350, lng: 77.0900 },
+  "122101": { lat: 28.3950, lng: 76.8900 },
+  "122102": { lat: 28.4050, lng: 76.9050 },
+  "122103": { lat: 28.4100, lng: 76.9200 },
+  "122104": { lat: 28.4200, lng: 76.9300 },
+  "122105": { lat: 28.3800, lng: 76.8700 },
+  "122107": { lat: 28.3700, lng: 76.8500 },
+  "122108": { lat: 28.3600, lng: 76.8300 },
+  "122413": { lat: 28.3300, lng: 76.8100 },
+  "122414": { lat: 28.3100, lng: 76.8000 },
+  "122505": { lat: 28.4111, lng: 76.8401 },
+  "122508": { lat: 28.4000, lng: 76.8200 },
+
+  // ── DELHI ────────────────────────────────────────────────
+  "110001": { lat: 28.6369, lng: 77.2167 },
+  "110002": { lat: 28.6430, lng: 77.2280 },
+  "110003": { lat: 28.6220, lng: 77.2050 },
+  "110004": { lat: 28.6560, lng: 77.2250 },
+  "110005": { lat: 28.6690, lng: 77.1900 },
+  "110006": { lat: 28.6500, lng: 77.2050 },
+  "110007": { lat: 28.6740, lng: 77.2100 },
+  "110008": { lat: 28.6600, lng: 77.1730 },
+  "110009": { lat: 28.6800, lng: 77.2300 },
+  "110010": { lat: 28.5684, lng: 77.1232 },
+  "110011": { lat: 28.6200, lng: 77.2280 },
+  "110012": { lat: 28.6080, lng: 77.1850 },
+  "110013": { lat: 28.5900, lng: 77.2150 },
+  "110014": { lat: 28.5700, lng: 77.2350 },
+  "110015": { lat: 28.6700, lng: 77.1500 },
+  "110016": { lat: 28.5450, lng: 77.2050 },
+  "110017": { lat: 28.5350, lng: 77.2150 },
+  "110018": { lat: 28.6300, lng: 77.1150 },
+  "110019": { lat: 28.5400, lng: 77.2850 },
+  "110020": { lat: 28.5392, lng: 77.2655 },
+  "110021": { lat: 28.5700, lng: 77.1650 },
+  "110022": { lat: 28.5950, lng: 77.1850 },
+  "110023": { lat: 28.6050, lng: 77.2050 },
+  "110024": { lat: 28.5550, lng: 77.2650 },
+  "110025": { lat: 28.5400, lng: 77.2500 },
+  "110026": { lat: 28.6900, lng: 77.1400 },
+  "110027": { lat: 28.6750, lng: 77.1600 },
+  "110028": { lat: 28.5950, lng: 77.1650 },
+  "110029": { lat: 28.5550, lng: 77.2100 },
+  "110030": { lat: 28.5250, lng: 77.1900 },
+  "110031": { lat: 28.6850, lng: 77.2700 },
+  "110032": { lat: 28.6600, lng: 77.2800 },
+  "110033": { lat: 28.7050, lng: 77.1450 },
+  "110034": { lat: 28.7100, lng: 77.1650 },
+  "110035": { lat: 28.7050, lng: 77.1850 },
+  "110036": { lat: 28.7200, lng: 77.1350 },
+  "110037": { lat: 28.6100, lng: 77.1350 },
+  "110038": { lat: 28.5950, lng: 77.1200 },
+  "110039": { lat: 28.5800, lng: 77.1200 },
+  "110040": { lat: 28.6750, lng: 77.1000 },
+  "110041": { lat: 28.7100, lng: 77.2000 },
+  "110042": { lat: 28.7250, lng: 77.1750 },
+  "110043": { lat: 28.6000, lng: 77.0750 },
+  "110044": { lat: 28.5400, lng: 77.3200 },
+  "110045": { lat: 28.5900, lng: 77.0700 },
+  "110046": { lat: 28.5600, lng: 77.0900 },
+  "110047": { lat: 28.5700, lng: 77.0800 },
+  "110048": { lat: 28.5500, lng: 77.2800 },
+  "110049": { lat: 28.5350, lng: 77.2600 },
+  "110051": { lat: 28.6400, lng: 77.3050 },
+  "110052": { lat: 28.7000, lng: 77.2200 },
+  "110053": { lat: 28.6500, lng: 77.2650 },
+  "110054": { lat: 28.6700, lng: 77.2050 },
+  "110055": { lat: 28.6600, lng: 77.2150 },
+  "110056": { lat: 28.6650, lng: 77.1150 },
+  "110057": { lat: 28.5200, lng: 77.1800 },
+  "110058": { lat: 28.6200, lng: 77.1050 },
+  "110059": { lat: 28.6000, lng: 77.0900 },
+  "110060": { lat: 28.6400, lng: 77.1800 },
+  "110061": { lat: 28.5650, lng: 77.3100 },
+  "110062": { lat: 28.5300, lng: 77.2400 },
+  "110063": { lat: 28.5850, lng: 77.1050 },
+  "110064": { lat: 28.6150, lng: 77.1600 },
+  "110065": { lat: 28.5800, lng: 77.2900 },
+  "110066": { lat: 28.5750, lng: 77.1500 },
+  "110067": { lat: 28.5850, lng: 77.1650 },
+  "110068": { lat: 28.5450, lng: 77.2200 },
+  "110069": { lat: 28.5550, lng: 77.2350 },
+  "110070": { lat: 28.5284, lng: 77.1512 },
+  "110071": { lat: 28.5150, lng: 77.1700 },
+  "110072": { lat: 28.5000, lng: 77.1300 },
+  "110073": { lat: 28.5100, lng: 77.1500 },
+  "110074": { lat: 28.5050, lng: 77.0950 },
+  "110075": { lat: 28.5786, lng: 77.0436 },
+  "110076": { lat: 28.5550, lng: 77.3300 },
+  "110077": { lat: 28.5450, lng: 77.0750 },
+  "110078": { lat: 28.5300, lng: 77.0600 },
+  "110080": { lat: 28.6550, lng: 77.3300 },
+  "110081": { lat: 28.6850, lng: 77.2000 },
+  "110082": { lat: 28.7000, lng: 77.1200 },
+  "110083": { lat: 28.6950, lng: 77.1050 },
+  "110084": { lat: 28.7100, lng: 77.0800 },
+  "110085": { lat: 28.7150, lng: 77.1000 },
+  "110086": { lat: 28.7250, lng: 77.1150 },
+  "110087": { lat: 28.7050, lng: 77.0950 },
+  "110088": { lat: 28.6450, lng: 77.0800 },
+  "110089": { lat: 28.6500, lng: 77.0950 },
+  "110090": { lat: 28.6750, lng: 77.3150 },
+  "110091": { lat: 28.6700, lng: 77.3350 },
+  "110092": { lat: 28.6600, lng: 77.3150 },
+  "110093": { lat: 28.6500, lng: 77.3250 },
+  "110094": { lat: 28.6350, lng: 77.3200 },
+  "110095": { lat: 28.6450, lng: 77.3400 },
+  "110096": { lat: 28.7300, lng: 77.2700 },
+
+  // ── REWARI ──────────────────────────────────────────────
+  "123001": { lat: 28.1970, lng: 76.6170 },
+  "123015": { lat: 28.2050, lng: 76.6050 },
+  "123021": { lat: 28.1800, lng: 76.5800 },
+  "123023": { lat: 28.1600, lng: 76.5550 },
+  "123024": { lat: 28.1450, lng: 76.5350 },
+  "123025": { lat: 28.2200, lng: 76.6400 },
+  "123029": { lat: 28.2400, lng: 76.6600 },
+  "123035": { lat: 28.2600, lng: 76.6800 },
+  "123101": { lat: 28.2700, lng: 76.7000 },
+  "123102": { lat: 28.2300, lng: 76.7100 },
+  "123103": { lat: 28.2100, lng: 76.7300 },
+  "123106": { lat: 28.2415, lng: 76.7322 },
+  "123110": { lat: 28.2500, lng: 76.7500 },
+  "123301": { lat: 28.1300, lng: 76.6500 },
+  "123302": { lat: 28.1100, lng: 76.6300 },
+  "123303": { lat: 28.0900, lng: 76.6100 },
+  "123401": { lat: 28.1833, lng: 76.6167 },
+  "123411": { lat: 28.1500, lng: 76.6000 },
+  "123412": { lat: 28.1650, lng: 76.6250 },
+  "123501": { lat: 28.0815, lng: 76.5822 },
+
+  // ── JHAJJAR ─────────────────────────────────────────────
+  "124001": { lat: 28.6070, lng: 76.6570 },
+  "124002": { lat: 28.5900, lng: 76.6400 },
+  "124021": { lat: 28.5750, lng: 76.6200 },
+  "124022": { lat: 28.5600, lng: 76.6050 },
+  "124101": { lat: 28.5150, lng: 76.5750 },
+  "124102": { lat: 28.5312, lng: 76.6211 },
+  "124103": { lat: 28.6067, lng: 76.6567 },
+  "124104": { lat: 28.4800, lng: 76.5500 },
+  "124105": { lat: 28.4600, lng: 76.5300 },
+  "124106": { lat: 28.4400, lng: 76.5100 },
+  "124107": { lat: 28.4200, lng: 76.4900 },
+  "124108": { lat: 28.6300, lng: 76.6800 },
+  "124109": { lat: 28.6500, lng: 76.7000 },
+  "124110": { lat: 28.6700, lng: 76.7200 },
+  "124111": { lat: 28.6900, lng: 76.7400 },
+  "124112": { lat: 28.5500, lng: 76.5900 },
+  "124113": { lat: 28.5300, lng: 76.5700 },
+  "124201": { lat: 28.7100, lng: 76.7600 },
+  "124202": { lat: 28.7300, lng: 76.7800 },
+  "124303": { lat: 28.4100, lng: 76.7400 },
+  "124304": { lat: 28.3900, lng: 76.7200 },
+  "124401": { lat: 28.4600, lng: 76.7800 },
+  "124404": { lat: 28.4400, lng: 76.7600 },
+  "124406": { lat: 28.4800, lng: 76.8000 },
+  "124501": { lat: 28.5050, lng: 76.8200 },
+  "124505": { lat: 28.5250, lng: 76.8400 },
+  "124507": { lat: 28.5450, lng: 76.8600 },
+};
+
+// Region centroid fallback – any pincode starting with these prefixes is deliverable
+const REGION_CENTROIDS = {
+  "110": { lat: 28.6139, lng: 77.2090 }, // Delhi (city centre)
+  "122": { lat: 28.4089, lng: 76.9926 }, // Gurgaon / Gurugram
+  "123": { lat: 28.1970, lng: 76.6170 }, // Rewari district
+  "124": { lat: 28.6070, lng: 76.6570 }, // Jhajjar district
+};
+
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const calcFeeFromDistance = (distance) => {
+  const fee = 30 + Math.floor(distance / 7) * 30;
+  return Math.round(Math.min(Math.max(fee, 30), 280));
+};
+
+const getDeliveryDetails = (pincode) => {
+  // 1. Exact match – most accurate distance
+  const exactCoords = PIN_COORDS[pincode];
+  if (exactCoords) {
+    const distance = calculateDistance(
+      STORE_COORDS.lat, STORE_COORDS.lng,
+      exactCoords.lat, exactCoords.lng
+    );
+    return {
+      isAllowed: true,
+      distance: parseFloat(distance.toFixed(2)),
+      deliveryFee: calcFeeFromDistance(distance),
+    };
+  }
+
+  // 2. Region-prefix fallback – estimate from district centroid
+  const prefix = String(pincode).substring(0, 3);
+  const regionCoords = REGION_CENTROIDS[prefix];
+  if (regionCoords) {
+    const distance = calculateDistance(
+      STORE_COORDS.lat, STORE_COORDS.lng,
+      regionCoords.lat, regionCoords.lng
+    );
+    return {
+      isAllowed: true,
+      distance: parseFloat(distance.toFixed(2)),
+      deliveryFee: calcFeeFromDistance(distance),
+      estimatedFee: true, // flag that this is an estimate
+    };
+  }
+
+  return { isAllowed: false };
+};
+
 // --- HELPERS ---
 const validateProduct = (data) => {
   const errors = [];
@@ -335,6 +579,67 @@ app.get("/api/user/orders", userAuth, async (req, res) => {
     console.error("Fetch Orders Error:", err);
     res.status(500).json({ message: "Error fetching orders" });
   }
+});
+
+// --- DELIVERY DEMAND ROUTES ---
+
+// Submit delivery request for unsupported areas
+app.post("/api/delivery/demand", async (req, res) => {
+  const { name, phone, address, pincode, city } = req.body;
+  
+  if (!name || !phone || !pincode) {
+    return res.status(400).json({ message: "Name, phone and pincode are required" });
+  }
+
+  const demandId = `DEMAND#${Date.now()}#${pincode}`;
+  const demand = {
+    suitId: demandId,
+    type: "delivery_demand",
+    name,
+    phone,
+    address,
+    pincode,
+    city,
+    created_at: new Date().toISOString()
+  };
+
+  const params = {
+    TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+    Item: demand
+  };
+
+  try {
+    await ddbDocClient.send(new PutCommand(params));
+    res.status(201).json({ message: "Request received. We will notify you when we expand!" });
+  } catch (err) {
+    console.error("Delivery Demand Save Error:", err);
+    res.status(500).json({ message: "Error saving request" });
+  }
+});
+
+// Get all delivery demands (Admin only)
+app.get("/api/admin/delivery/demands", adminAuth, async (req, res) => {
+  const params = {
+    TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+    FilterExpression: "#type = :dtype",
+    ExpressionAttributeNames: { "#type": "type" },
+    ExpressionAttributeValues: { ":dtype": "delivery_demand" }
+  };
+
+  try {
+    const data = await ddbDocClient.send(new ScanCommand(params));
+    res.json(data.Items.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)));
+  } catch (err) {
+    console.error("Fetch Demands Error:", err);
+    res.status(500).json({ message: "Error fetching delivery demands" });
+  }
+});
+
+// Route to validate a pincode and get delivery fee
+app.get("/api/delivery/validate/:pincode", async (req, res) => {
+  const { pincode } = req.params;
+  const details = getDeliveryDetails(pincode);
+  res.json(details);
 });
 
 // --- COUPON ROUTES ---
