@@ -807,6 +807,42 @@ app.post("/api/admin/upload", adminAuth, upload.single("image"), async (req, res
   }
 });
 
+// Get all users (Admin only)
+app.get("/api/admin/users", adminAuth, async (req, res) => {
+  const params = {
+    TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+    FilterExpression: "#type = :utype",
+    ExpressionAttributeNames: { "#type": "type" },
+    ExpressionAttributeValues: { ":utype": "user_profile" }
+  };
+
+  try {
+    const data = await ddbDocClient.send(new ScanCommand(params));
+    res.json(data.Items);
+  } catch (err) {
+    console.error("Fetch Users Error:", err);
+    res.status(500).json({ message: "Error fetching users" });
+  }
+});
+
+// Get all orders (Admin only)
+app.get("/api/admin/orders", adminAuth, async (req, res) => {
+  const params = {
+    TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+    FilterExpression: "#type = :otype",
+    ExpressionAttributeNames: { "#type": "type" },
+    ExpressionAttributeValues: { ":otype": "order" }
+  };
+
+  try {
+    const data = await ddbDocClient.send(new ScanCommand(params));
+    res.json(data.Items);
+  } catch (err) {
+    console.error("Fetch Orders Error:", err);
+    res.status(500).json({ message: "Error fetching orders" });
+  }
+});
+
 // Health Check
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "Kamlesh Suits API" });
