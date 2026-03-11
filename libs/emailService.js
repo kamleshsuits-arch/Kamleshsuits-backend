@@ -119,3 +119,93 @@ export const sendOrderNotification = async (orderDetails) => {
     return { success: false, error: error.message };
   }
 };
+
+/**
+ * Sends a branded OTP/Verification email to the user.
+ * @param {string} email - Recipient email
+ * @param {string} code - The OTP code
+ * @param {string} type - 'verification' | 'reset'
+ */
+export const sendAuthOTPEmail = async (email, code, type = 'verification') => {
+  const isReset = type === 'reset';
+  const subject = isReset 
+    ? 'Reset Your Kamlesh Suits Password' 
+    : 'Verify Your Email - Kamlesh Suits';
+  
+  const title = isReset ? 'Password Reset' : 'Welcome to Kamlesh Suits';
+  const message = isReset 
+    ? 'We received a request to reset your password. Use the code below to proceed.' 
+    : 'Thank you for joining our exclusive community. Please verify your email to start shopping.';
+
+  // Base colors from project theme
+  const colors = {
+    primary: '#1C1917',
+    accent: '#D4A373',
+    background: '#FAFAF9',
+    text: '#57534E'
+  };
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: 'Lato', Helvetica, Arial, sans-serif; background-color: ${colors.background}; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05); border: 1px solid #e5e5e5; }
+        .header { background-color: ${colors.primary}; padding: 40px 20px; text-align: center; }
+        .logo-circle { width: 80px; height: 80px; background: white; border-radius: 50%; display: inline-block; padding: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .content { padding: 40px; text-align: center; }
+        .title { color: ${colors.primary}; font-size: 28px; margin-bottom: 16px; font-family: 'Playfair Display', serif; }
+        .message { color: ${colors.text}; font-size: 16px; line-height: 1.6; margin-bottom: 32px; }
+        .otp-container { background: #FDFBFA; border: 2px dashed ${colors.accent}; border-radius: 16px; padding: 24px; margin-bottom: 32px; }
+        .otp-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: ${colors.accent}; margin-bottom: 12px; }
+        .otp-code { font-size: 42px; font-weight: 700; color: ${colors.primary}; letter-spacing: 12px; margin: 0; }
+        .footer { background: #f9f9f9; padding: 30px; text-align: center; border-top: 1px solid #eeeeee; }
+        .footer-text { font-size: 12px; color: #999999; margin-bottom: 8px; }
+        .security-notice { font-size: 11px; color: #aaaaaa; font-style: italic; }
+      </style>
+      <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="logo-circle">
+            <img src="https://kamlesh-suits-assets.s3.ap-south-1.amazonaws.com/favicon.png" alt="K" style="width: 100%; height: 100%; object-fit: contain;">
+          </div>
+        </div>
+        <div class="content">
+          <h1 class="title">${title}</h1>
+          <p class="message">${message}</p>
+          
+          <div class="otp-container">
+            <div class="otp-label">Verification Code</div>
+            <div class="otp-code">${code}</div>
+          </div>
+          
+          <p style="font-size: 14px; color: #888;">This code will expire in 10 minutes. If you did not request this, please ignore this email.</p>
+        </div>
+        <div class="footer">
+          <p class="footer-text">© 2024 Kamlesh Suits & Textiles. Premium Ethnic Wear.</p>
+          <p class="security-notice">Never share your OTP with anyone. Our customer support will never ask for it.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const mailOptions = {
+    from: `"Kamlesh Suits" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject,
+    html,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return { success: true };
+  } catch (error) {
+    console.error('OTP Email sending failed:', error);
+    return { success: false, error: error.message };
+  }
+};
