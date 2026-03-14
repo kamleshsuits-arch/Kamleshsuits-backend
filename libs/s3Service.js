@@ -31,7 +31,13 @@ export const uploadFileToS3 = async (fileBuffer, fileName, mimeType) => {
     // Return the Location provided by AWS SDK (standard public URL)
     return result.Location;
   } catch (err) {
-    console.error("S3 Upload Error:", err);
-    throw new Error("Failed to upload image to S3");
+    console.error("S3 Upload Full Error:", {
+      message: err.message,
+      code: err.code,
+      requestId: err.$metadata?.requestId,
+      status: err.$metadata?.httpStatusCode
+    });
+    // Throw the original error so the route handler knows the real cause
+    throw err;
   }
 };

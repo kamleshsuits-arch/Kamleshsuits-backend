@@ -793,9 +793,13 @@ app.get("/api/coupons", async (req, res) => {
 
 // Image Upload Route
 app.post("/api/admin/upload", adminAuth, upload.single("image"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+  if (!process.env.AWS_S3_BUCKET_NAME) {
+    console.error("Missing AWS_S3_BUCKET_NAME in environment variables");
+    return res.status(500).json({ message: "Server configuration error: Missing S3 Bucket Name" });
+  }
 
   try {
+    console.log("Starting S3 upload for:", req.file.originalname);
     const fileUrl = await uploadFileToS3(
       req.file.buffer,
       req.file.originalname,
@@ -803,7 +807,13 @@ app.post("/api/admin/upload", adminAuth, upload.single("image"), async (req, res
     );
     res.json({ url: fileUrl });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error("Critical Upload Error:", err);
+    res.status(err.$metadata?.httpStatusCode || 500).json({ 
+      message: err.message,
+      code: err.code || err.name,
+      requestId: err.$metadata?.requestId,
+      note: "Check your Render Environment Variables for AWS credentials"
+    });
   }
 });
 
