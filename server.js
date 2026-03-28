@@ -506,7 +506,8 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
     return res.status(400).json({ message: "Order details are incomplete" });
   }
 
-  const orderId = `ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  // 🆔 Dynamic Order ID Generation as requested (#ORD-timestamp-random)
+  const orderId = `#ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
   
   const order = {
     suitId: `ORDER#${orderId}`,
@@ -514,6 +515,8 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
     orderId,
     user_id: req.user.sub,
     user_email: req.user.email,
+    user_name: address.name,   // Elevate user details to top level for admin ease
+    user_phone: address.phone, // Elevate user details to top level for admin ease
     items,
     address,
     subtotal,
