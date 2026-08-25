@@ -15,12 +15,14 @@ import { adminAuth } from "./middleware/adminAuth.js";
 import { userAuth } from "./middleware/userAuth.js";
 import { uploadFileToS3 } from "./libs/s3Service.js";
 import { sendOrderNotification } from "./libs/emailService.js";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
@@ -500,6 +502,8 @@ app.post("/api/user/profile", userAuth, async (req, res) => {
 
 const createOrderRecord = async ({ items, address, subtotal, total, paymentMethod, user = null }) => {
   const orderId = `#ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const trackingToken = randomBytes(24).toString("hex");
+  const trackingTokenHash = createHash("sha256").update(trackingToken).digest("hex");
   const now = new Date().toISOString();
   const order = {
     suitId: `ORDER#${orderId}`,
@@ -518,6 +522,7 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     paymentStatus: "Not Requested",
     status: "Awaiting Confirmation",
     confirmationMethod: "Store phone call",
+    trackingTokenHash,
     created_at: now,
     updated_at: now,
   };
@@ -527,7 +532,44 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     Item: order,
   }));
 
-  return order;
+  return { order, trackingToken };
+};
+
+const toPublicTrackingOrder = (order) => ({
+  orderId: order.orderId,
+  status: order.status,
+  paymentStatus: order.paymentStatus,
+  paymentMethod: order.paymentMethod,
+  total: order.total,
+  created_at: order.created_at,
+  updated_at: order.updated_at,
+  confirmed_at: order.confirmed_at || null,
+  customerName: order.user_name,
+  phoneMasked: order.user_phone ? `******${String(order.user_phone).slice(-4)}` : null,
+  delivery: {
+    area: order.address?.area || '',
+    city: order.address?.city || '',
+    state: order.address?.state || '',
+    pincode: order.address?.pincode || ''
+  },
+  items: (order.items || []).map(item => ({
+    suitId: item.suitId,
+    title: item.title,
+    image: item.image,
+    quantity: item.quantity,
+    price: item.price,
+    selectedColor: item.selectedColor || null
+  }))
+});
+
+const trackingAttempts = new Map();
+const allowTrackingAttempt = (ip) => {
+  const now = Date.now();
+  const recent = (trackingAttempts.get(ip) || []).filter(time => now - time < 15 * 60 * 1000);
+  if (recent.length >= 100) return false;
+  recent.push(now);
+  trackingAttempts.set(ip, recent);
+  return true;
 };
 
 const validateOrderRequest = ({ items, address, total }) => {
@@ -545,11 +587,12 @@ app.post("/api/orders", async (req, res) => {
   if (validationError) return res.status(400).json({ message: validationError });
 
   try {
-    const order = await createOrderRecord({ items, address, subtotal, total, paymentMethod });
+    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod });
     res.status(201).json({
       message: "Order request received. The store will call the customer to confirm it.",
       orderId: order.orderId,
       status: order.status,
+      trackingToken,
     });
   } catch (err) {
     console.error("Guest Order Placement Error:", err);
@@ -564,7 +607,7 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
   if (validationError) return res.status(400).json({ message: validationError });
 
   try {
-    const order = await createOrderRecord({ items, address, subtotal, total, paymentMethod, user: req.user });
+    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod, user: req.user });
     
     // 2. Send Email Notifications (Fire and forget or wait depending on reliability needs)
     // We wait here to ensure we can tell the user if something went wrong with the core flow
@@ -586,11 +629,55 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
       message: "Order placed successfully", 
       orderId: order.orderId,
       status: order.status,
+      trackingToken,
       emailSent: emailResult.success 
     });
   } catch (err) {
     console.error("Order Placement Error:", err);
     res.status(500).json({ message: "Error placing order", error: err.message });
+  }
+});
+
+// Track a guest order using its private device token, or recover it with order ID + phone.
+app.post("/api/orders/track", async (req, res) => {
+  if (!allowTrackingAttempt(req.ip || req.socket.remoteAddress || "unknown")) {
+    return res.status(429).json({ message: "Too many tracking attempts. Please try again later." });
+  }
+
+  const orderId = String(req.body.orderId || "").trim().toUpperCase();
+  const phone = String(req.body.phone || "").replace(/\D/g, "").slice(-10);
+  const trackingToken = String(req.body.trackingToken || "");
+  if (!/^#ORD-\d{13}-\d{4}$/.test(orderId)) {
+    return res.status(404).json({ message: "Order not found. Check the order ID and phone number." });
+  }
+
+  try {
+    const result = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: `ORDER#${orderId}` }
+    }));
+    const order = result.Item;
+    if (!order || order.type !== "order") {
+      return res.status(404).json({ message: "Order not found. Check the order ID and phone number." });
+    }
+
+    let tokenMatches = false;
+    if (trackingToken && order.trackingTokenHash) {
+      const suppliedHash = createHash("sha256").update(trackingToken).digest("hex");
+      const expected = Buffer.from(order.trackingTokenHash, "hex");
+      const supplied = Buffer.from(suppliedHash, "hex");
+      tokenMatches = expected.length === supplied.length && timingSafeEqual(expected, supplied);
+    }
+    const phoneMatches = /^\d{10}$/.test(phone) && phone === String(order.user_phone || "").replace(/\D/g, "").slice(-10);
+
+    if (!tokenMatches && !phoneMatches) {
+      return res.status(404).json({ message: "Order not found. Check the order ID and phone number." });
+    }
+
+    res.json(toPublicTrackingOrder(order));
+  } catch (err) {
+    console.error("Guest Order Tracking Error:", err);
+    res.status(500).json({ message: "Could not load this order right now. Please try again." });
   }
 });
 
