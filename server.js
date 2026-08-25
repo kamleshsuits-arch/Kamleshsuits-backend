@@ -517,7 +517,7 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     paymentMethod: paymentMethod || "cod",
     paymentStatus: "Not Requested",
     status: "Awaiting Confirmation",
-    confirmationMethod: "WhatsApp or phone call",
+    confirmationMethod: "Store phone call",
     created_at: now,
     updated_at: now,
   };
@@ -538,7 +538,7 @@ const validateOrderRequest = ({ items, address, total }) => {
   return null;
 };
 
-// Guest checkout: the store confirms every request by WhatsApp or phone before fulfilment.
+// Guest checkout: the store calls the customer before confirming fulfilment.
 app.post("/api/orders", async (req, res) => {
   const { items, address, subtotal, total, paymentMethod } = req.body;
   const validationError = validateOrderRequest({ items, address, total });
@@ -547,7 +547,7 @@ app.post("/api/orders", async (req, res) => {
   try {
     const order = await createOrderRecord({ items, address, subtotal, total, paymentMethod });
     res.status(201).json({
-      message: "Order request received. The store will confirm it by WhatsApp or phone.",
+      message: "Order request received. The store will call the customer to confirm it.",
       orderId: order.orderId,
       status: order.status,
     });
@@ -909,6 +909,12 @@ app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
     names["#paymentStatus"] = "paymentStatus";
     values[":paymentStatus"] = paymentStatus;
     updateExpression += ", #paymentStatus = :paymentStatus";
+  }
+
+  if (status === "Confirmed") {
+    names["#confirmedAt"] = "confirmed_at";
+    values[":confirmedAt"] = new Date().toISOString();
+    updateExpression += ", #confirmedAt = :confirmedAt";
   }
 
   try {
