@@ -14,6 +14,7 @@ import {
 import { adminAuth } from "./middleware/adminAuth.js";
 import { userAuth } from "./middleware/userAuth.js";
 import { uploadFileToS3 } from "./libs/s3Service.js";
+import { DEFAULT_PRODUCT_CATEGORY, PRODUCT_TAXONOMY, getProductCategory } from "./config/productTaxonomy.js";
 import { sendOrderNotification } from "./libs/emailService.js";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
@@ -276,6 +277,8 @@ const getDeliveryDetails = (pincode) => {
 // --- HELPERS ---
 const validateProduct = (data) => {
   const errors = [];
+  const productCategory = String(data.product_category || DEFAULT_PRODUCT_CATEGORY).trim();
+  const categoryDefinition = getProductCategory(productCategory);
   
   const sanitized = {
     title: String(data.title || "Untitled Asset").trim(),
@@ -284,7 +287,9 @@ const validateProduct = (data) => {
     discount: parseInt(data.discount) || 0,
     mrp: parseFloat(data.mrp) || parseFloat(data.price) || 0,
     stock: parseInt(data.stock) || 0,
-    type: String(data.type || "suit"),
+    type: String(data.type || "product"),
+    product_category: productCategory,
+    product_subcategory: String(data.product_subcategory || "").trim(),
     image: String(data.image || ""),
     images: Array.isArray(data.images) ? data.images : [],
     colors: Array.isArray(data.colors) ? data.colors : [],
@@ -298,19 +303,35 @@ const validateProduct = (data) => {
 
   if (!sanitized.title) errors.push("Title is required");
   if (sanitized.price < 0) errors.push("Price cannot be negative");
+  if (!categoryDefinition) errors.push("Select a valid product category");
+  if (
+    categoryDefinition &&
+    sanitized.product_subcategory &&
+    !categoryDefinition.subcategories.includes(sanitized.product_subcategory)
+  ) {
+    errors.push("Select a valid product subcategory");
+  }
+  if (categoryDefinition?.requiresFabric && (!sanitized.fabric_family || !sanitized.fabric_category)) {
+    errors.push("Fabric family and fabric type are required for suits");
+  }
   
   return { sanitized, errors };
 };
 
 // --- PUBLIC ROUTES ---
 
+// Public, versionable product taxonomy used by admin forms and storefront filters.
+app.get("/api/product-taxonomy", (req, res) => {
+  res.json({ version: 1, defaultCategory: DEFAULT_PRODUCT_CATEGORY, categories: PRODUCT_TAXONOMY });
+});
+
 // Get all products
 app.get("/api/products", async (req, res) => {
   const params = {
     TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
-    FilterExpression: "#type = :suit",
+    FilterExpression: "#type = :suit OR #type = :product",
     ExpressionAttributeNames: { "#type": "type" },
-    ExpressionAttributeValues: { ":suit": "suit" }
+    ExpressionAttributeValues: { ":suit": "suit", ":product": "product" }
   };
 
   try {
@@ -387,7 +408,7 @@ app.put("/api/admin/products/:id", adminAuth, async (req, res) => {
   const updates = {};
   const validFields = [
     'title', 'description', 'price', 'discount', 'mrp', 'stock', 
-    'type', 'image', 'images', 'colors', 'categories', 
+    'type', 'product_category', 'product_subcategory', 'image', 'images', 'colors', 'categories',
     'fabric_family', 'fabric_category', 'session', 'rating', 'reviews'
   ];
 
