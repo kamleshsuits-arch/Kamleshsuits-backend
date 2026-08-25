@@ -498,43 +498,73 @@ app.post("/api/user/profile", userAuth, async (req, res) => {
 
 // --- ORDER ROUTES ---
 
-// Place New Order
-app.post("/api/user/orders", userAuth, async (req, res) => {
-  const { items, address, subtotal, total, paymentMethod } = req.body;
-  
-  if (!items || !address || !total) {
-    return res.status(400).json({ message: "Order details are incomplete" });
-  }
-
-  // 🆔 Dynamic Order ID Generation as requested (#ORD-timestamp-random)
+const createOrderRecord = async ({ items, address, subtotal, total, paymentMethod, user = null }) => {
   const orderId = `#ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
-  
+  const now = new Date().toISOString();
   const order = {
     suitId: `ORDER#${orderId}`,
     type: "order",
     orderId,
-    user_id: req.user.sub,
-    user_email: req.user.email,
-    user_name: address.name,   // Elevate user details to top level for admin ease
-    user_phone: address.phone, // Elevate user details to top level for admin ease
+    user_id: user?.sub || `GUEST#${address.phone}`,
+    user_email: user?.email || null,
+    user_name: address.name,
+    user_phone: address.phone,
+    guest_order: !user,
     items,
     address,
-    subtotal,
-    total,
-    paymentMethod,
-    status: "Pending",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    subtotal: Number(subtotal),
+    total: Number(total),
+    paymentMethod: paymentMethod || "cod",
+    paymentStatus: "Not Requested",
+    status: "Awaiting Confirmation",
+    confirmationMethod: "WhatsApp or phone call",
+    created_at: now,
+    updated_at: now,
   };
 
-  const params = {
+  await ddbDocClient.send(new PutCommand({
     TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
     Item: order,
-  };
+  }));
+
+  return order;
+};
+
+const validateOrderRequest = ({ items, address, total }) => {
+  if (!Array.isArray(items) || items.length === 0 || items.length > 20) return "Your cart is empty or too large";
+  if (!address || !address.name || !/^\d{10}$/.test(String(address.phone || ""))) return "A valid name and 10-digit mobile number are required";
+  if (!/^\d{6}$/.test(String(address.pincode || "")) || !address.houseNo || !address.area || !address.city || !address.state) return "Delivery address is incomplete";
+  if (!Number.isFinite(Number(total)) || Number(total) <= 0) return "Order total is invalid";
+  return null;
+};
+
+// Guest checkout: the store confirms every request by WhatsApp or phone before fulfilment.
+app.post("/api/orders", async (req, res) => {
+  const { items, address, subtotal, total, paymentMethod } = req.body;
+  const validationError = validateOrderRequest({ items, address, total });
+  if (validationError) return res.status(400).json({ message: validationError });
 
   try {
-    // 1. Save to DynamoDB
-    await ddbDocClient.send(new PutCommand(params));
+    const order = await createOrderRecord({ items, address, subtotal, total, paymentMethod });
+    res.status(201).json({
+      message: "Order request received. The store will confirm it by WhatsApp or phone.",
+      orderId: order.orderId,
+      status: order.status,
+    });
+  } catch (err) {
+    console.error("Guest Order Placement Error:", err);
+    res.status(500).json({ message: "Could not save your order request. Please try again." });
+  }
+});
+
+// Place New Order
+app.post("/api/user/orders", userAuth, async (req, res) => {
+  const { items, address, subtotal, total, paymentMethod } = req.body;
+  const validationError = validateOrderRequest({ items, address, total });
+  if (validationError) return res.status(400).json({ message: validationError });
+
+  try {
+    const order = await createOrderRecord({ items, address, subtotal, total, paymentMethod, user: req.user });
     
     // 2. Send Email Notifications (Fire and forget or wait depending on reliability needs)
     // We wait here to ensure we can tell the user if something went wrong with the core flow
@@ -545,7 +575,7 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
       subtotal,
       total,
       paymentMethod,
-      orderId
+      orderId: order.orderId
     });
 
     if (!emailResult.success) {
@@ -554,7 +584,8 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
 
     res.status(201).json({ 
       message: "Order placed successfully", 
-      orderId,
+      orderId: order.orderId,
+      status: order.status,
       emailSent: emailResult.success 
     });
   } catch (err) {
@@ -853,6 +884,46 @@ app.get("/api/admin/orders", adminAuth, async (req, res) => {
   } catch (err) {
     console.error("Fetch Orders Error:", err);
     res.status(500).json({ message: "Error fetching orders" });
+  }
+});
+
+// Confirm or advance an order after the store has contacted the customer.
+app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
+  const allowedStatuses = ["Awaiting Confirmation", "Confirmed", "Shipped", "Delivered", "Cancelled"];
+  const allowedPaymentStatuses = ["Not Requested", "Pending", "Paid", "Cash on Delivery"];
+  const { status, paymentStatus } = req.body;
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({ message: "Invalid order status" });
+  }
+  if (paymentStatus && !allowedPaymentStatuses.includes(paymentStatus)) {
+    return res.status(400).json({ message: "Invalid payment status" });
+  }
+
+  const orderId = decodeURIComponent(req.params.orderId);
+  const names = { "#status": "status", "#updated": "updated_at" };
+  const values = { ":status": status, ":updated": new Date().toISOString() };
+  let updateExpression = "SET #status = :status, #updated = :updated";
+
+  if (paymentStatus) {
+    names["#paymentStatus"] = "paymentStatus";
+    values[":paymentStatus"] = paymentStatus;
+    updateExpression += ", #paymentStatus = :paymentStatus";
+  }
+
+  try {
+    const result = await ddbDocClient.send(new UpdateCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: `ORDER#${orderId}` },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+      ReturnValues: "ALL_NEW",
+    }));
+    res.json(result.Attributes);
+  } catch (err) {
+    console.error("Order Status Update Error:", err);
+    res.status(500).json({ message: "Could not update order status" });
   }
 });
 
