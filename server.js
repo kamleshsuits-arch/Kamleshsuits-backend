@@ -8,6 +8,8 @@ import {
   ScanCommand, 
   PutCommand, 
   GetCommand, 
+  BatchGetCommand,
+  TransactWriteCommand,
   UpdateCommand, 
   DeleteCommand 
 } from "@aws-sdk/lib-dynamodb";
@@ -540,7 +542,7 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     subtotal: Number(subtotal),
     total: Number(total),
     paymentMethod: paymentMethod || "cod",
-    paymentStatus: "Not Requested",
+    paymentStatus: "Unpaid",
     status: "Awaiting Confirmation",
     confirmationMethod: "Store phone call",
     trackingTokenHash,
@@ -548,9 +550,29 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     updated_at: now,
   };
 
-  await ddbDocClient.send(new PutCommand({
-    TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
-    Item: order,
+  await ddbDocClient.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        Put: {
+          TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+          Item: order,
+        },
+      },
+      {
+        Update: {
+          TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+          Key: { suitId: `PHONE_ORDERS#${address.phone}` },
+          UpdateExpression: "SET #type = if_not_exists(#type, :type), user_phone = if_not_exists(user_phone, :phone), order_refs = list_append(if_not_exists(order_refs, :empty), :newRef)",
+          ExpressionAttributeNames: { "#type": "type" },
+          ExpressionAttributeValues: {
+            ":type": "phone_order_index",
+            ":phone": address.phone,
+            ":empty": [],
+            ":newRef": [{ orderId, created_at: now }],
+          },
+        },
+      },
+    ],
   }));
 
   return { order, trackingToken };
@@ -561,6 +583,8 @@ const toPublicTrackingOrder = (order) => ({
   status: order.status,
   paymentStatus: order.paymentStatus,
   paymentMethod: order.paymentMethod,
+  paid_at: order.paid_at || null,
+  payment_updated_at: order.payment_updated_at || null,
   total: order.total,
   created_at: order.created_at,
   updated_at: order.updated_at,
@@ -699,6 +723,61 @@ app.post("/api/orders/track", async (req, res) => {
   } catch (err) {
     console.error("Guest Order Tracking Error:", err);
     res.status(500).json({ message: "Could not load this order right now. Please try again." });
+  }
+});
+
+// Find lightweight order references by delivery mobile number. Full order data
+// is fetched only after the customer selects a matching order.
+app.post("/api/orders/lookup-by-phone", async (req, res) => {
+  if (!allowTrackingAttempt(req.ip || req.socket.remoteAddress || "unknown")) {
+    return res.status(429).json({ message: "Too many tracking attempts. Please try again later." });
+  }
+
+  const phone = String(req.body.phone || "").replace(/\D/g, "").slice(-10);
+  if (!/^\d{10}$/.test(phone)) {
+    return res.status(400).json({ message: "Enter a valid 10-digit mobile number." });
+  }
+
+  try {
+    const tableName = process.env.AWS_DYNAMODB_TABLE_NAME;
+    const index = await ddbDocClient.send(new GetCommand({
+      TableName: tableName,
+      Key: { suitId: `PHONE_ORDERS#${phone}` },
+      ProjectionExpression: "order_refs",
+    }));
+
+    let items = [];
+    const refs = (index.Item?.order_refs || []).slice(-25);
+    if (refs.length) {
+      const currentOrders = await ddbDocClient.send(new BatchGetCommand({
+        RequestItems: {
+          [tableName]: {
+            Keys: refs.map(ref => ({ suitId: `ORDER#${ref.orderId}` })),
+            ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, total",
+            ExpressionAttributeNames: { "#status": "status" },
+          },
+        },
+      }));
+      items = currentOrders.Responses?.[tableName] || [];
+    } else {
+      // Compatibility path for orders created before the phone index existed.
+      const legacy = await ddbDocClient.send(new ScanCommand({
+        TableName: tableName,
+        FilterExpression: "#type = :orderType AND user_phone = :phone",
+        ExpressionAttributeValues: { ":orderType": "order", ":phone": phone },
+        ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, total",
+        ExpressionAttributeNames: { "#type": "type", "#status": "status" },
+      }));
+      items = legacy.Items || [];
+    }
+
+    const matches = items
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 25);
+    res.json(matches);
+  } catch (err) {
+    console.error("Phone Order Lookup Error:", err);
+    res.status(500).json({ message: "Could not find orders right now. Please try again." });
   }
 });
 
@@ -1191,14 +1270,18 @@ app.patch("/api/admin/delivery/demands/:demandId", adminAuth, async (req, res) =
 // Confirm or advance an order after the store has contacted the customer.
 app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
   const allowedStatuses = ["Awaiting Confirmation", "Confirmed", "Shipped", "Delivered", "Cancelled"];
-  const allowedPaymentStatuses = ["Not Requested", "Pending", "Paid", "Cash on Delivery"];
-  const { status, paymentStatus } = req.body;
+  const allowedPaymentStatuses = ["Unpaid", "Pending", "Paid", "Refunded"];
+  const allowedPaymentMethods = ["cod", "cash", "upi", "phonepe", "bank_transfer", "card", "other"];
+  const { status, paymentStatus, paymentMethod } = req.body;
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ message: "Invalid order status" });
   }
   if (paymentStatus && !allowedPaymentStatuses.includes(paymentStatus)) {
     return res.status(400).json({ message: "Invalid payment status" });
+  }
+  if (paymentMethod && !allowedPaymentMethods.includes(paymentMethod)) {
+    return res.status(400).json({ message: "Invalid payment method" });
   }
 
   const orderId = decodeURIComponent(req.params.orderId);
@@ -1210,6 +1293,24 @@ app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
     names["#paymentStatus"] = "paymentStatus";
     values[":paymentStatus"] = paymentStatus;
     updateExpression += ", #paymentStatus = :paymentStatus";
+    names["#paymentUpdatedAt"] = "payment_updated_at";
+    values[":paymentUpdatedAt"] = new Date().toISOString();
+    updateExpression += ", #paymentUpdatedAt = :paymentUpdatedAt";
+  }
+
+  if (paymentMethod) {
+    names["#paymentMethod"] = "paymentMethod";
+    values[":paymentMethod"] = paymentMethod;
+    updateExpression += ", #paymentMethod = :paymentMethod";
+  }
+
+  if (paymentStatus === "Paid") {
+    names["#paidAt"] = "paid_at";
+    values[":paidAt"] = new Date().toISOString();
+    updateExpression += ", #paidAt = if_not_exists(#paidAt, :paidAt)";
+  } else if (paymentStatus) {
+    names["#paidAt"] = "paid_at";
+    updateExpression += " REMOVE #paidAt";
   }
 
   if (status === "Confirmed") {
