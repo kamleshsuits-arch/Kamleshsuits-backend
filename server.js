@@ -742,6 +742,8 @@ app.post("/api/delivery/demand", async (req, res) => {
     address,
     pincode,
     city,
+    status: "New",
+    admin_notes: "",
     created_at: new Date().toISOString()
   };
 
@@ -805,24 +807,45 @@ app.get("/api/admin/coupons", adminAuth, async (req, res) => {
 
 // Create/Update Coupon (Admin only)
 app.post("/api/admin/coupons", adminAuth, async (req, res) => {
-  const { code, discount, type, min_purchase, usage_limit, expires_at, description } = req.body;
+  const { code, discount, type, min_purchase, usage_limit, expires_at, description, category_ids = [] } = req.body;
   
   if (!code || !discount) {
     return res.status(400).json({ message: "Code and discount are required" });
   }
+  const discountValue = Number(discount);
+  if (!Number.isFinite(discountValue) || discountValue <= 0 || (type === "percent" && discountValue > 100)) {
+    return res.status(400).json({ message: "Enter a valid coupon discount" });
+  }
+  const validCategoryIds = new Set(PRODUCT_TAXONOMY.map(category => category.id));
+  const safeCategoryIds = Array.isArray(category_ids)
+    ? [...new Set(category_ids.filter(categoryId => validCategoryIds.has(categoryId)))]
+    : [];
+
+  const couponKey = `COUPON#${code.toUpperCase()}`;
+  let existingCoupon;
+  try {
+    const existing = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: couponKey },
+    }));
+    existingCoupon = existing.Item;
+  } catch (err) {
+    console.error("Coupon lookup before save failed:", err);
+  }
 
   const coupon = {
-    suitId: `COUPON#${code.toUpperCase()}`,
+    suitId: couponKey,
     type: "coupon",
     code: code.toUpperCase(),
-    discount: parseFloat(discount),
+    discount: discountValue,
     discount_type: type || "flat", // "flat" or "percent"
     min_purchase: parseFloat(min_purchase) || 0,
     usage_limit: parseInt(usage_limit) || null,
-    used_count: 0,
+    used_count: existingCoupon?.used_count || 0,
+    category_ids: safeCategoryIds,
     expires_at: expires_at || null,
     description: description || "",
-    created_at: new Date().toISOString(),
+    created_at: existingCoupon?.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 
@@ -856,7 +879,7 @@ app.delete("/api/admin/coupons/:code", adminAuth, async (req, res) => {
 
 // Validate Coupon (Public/User)
 app.post("/api/coupons/validate", async (req, res) => {
-  const { code, subtotal } = req.body;
+  const { code, subtotal, items = [] } = req.body;
   
   if (!code) return res.status(400).json({ message: "Coupon code is required" });
 
@@ -878,10 +901,31 @@ app.post("/api/coupons/validate", async (req, res) => {
       return res.status(400).json({ message: "Coupon has expired" });
     }
 
-    // Check min purchase
-    if (subtotal < coupon.min_purchase) {
+    const targetedCategories = Array.isArray(coupon.category_ids) ? coupon.category_ids : [];
+    let eligibleSubtotal = Number(subtotal || 0);
+    if (targetedCategories.length > 0) {
+      const requestedItems = Array.isArray(items) ? items.filter(item => item?.suitId) : [];
+      const verifiedProducts = await Promise.all(requestedItems.map(async item => {
+        const productResult = await ddbDocClient.send(new GetCommand({
+          TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+          Key: { suitId: item.suitId },
+        }));
+        return { item, product: productResult.Item };
+      }));
+      eligibleSubtotal = verifiedProducts.reduce((sum, { item, product }) => {
+        if (!product || !targetedCategories.includes(product.product_category || DEFAULT_PRODUCT_CATEGORY)) return sum;
+        return sum + (Number(product.price || 0) * Math.max(1, Number(item.quantity || 1)));
+      }, 0);
+    }
+
+    if (targetedCategories.length > 0 && eligibleSubtotal <= 0) {
+      return res.status(400).json({ message: "This coupon does not apply to products in your cart" });
+    }
+
+    // Minimum purchase applies only to products in the selected categories.
+    if (eligibleSubtotal < coupon.min_purchase) {
       return res.status(400).json({ 
-        message: `Min purchase of ₹${coupon.min_purchase} required for this coupon` 
+        message: `Min purchase of ₹${coupon.min_purchase} required on eligible products`
       });
     }
 
@@ -890,7 +934,7 @@ app.post("/api/coupons/validate", async (req, res) => {
       return res.status(400).json({ message: "Coupon usage limit reached" });
     }
 
-    res.json(coupon);
+    res.json({ ...coupon, eligible_subtotal: eligibleSubtotal });
   } catch (err) {
     res.status(500).json({ message: "Error validating coupon" });
   }
@@ -930,6 +974,110 @@ app.get("/api/coupons", async (req, res) => {
   } catch (err) {
     console.error("[SERVICE_COUPONS] Scan Error:", err);
     res.status(500).json({ message: "Error fetching coupons", error: err.message });
+  }
+});
+
+// --- HOME BANNER ROUTES ---
+
+// Public, scheduled banner feed used by the home hero.
+app.get("/api/banners", async (req, res) => {
+  try {
+    const data = await ddbDocClient.send(new ScanCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      FilterExpression: "#type = :banner",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":banner": "home_banner" },
+    }));
+    const now = Date.now();
+    const banners = (data.Items || [])
+      .filter(banner => banner.active !== false)
+      .filter(banner => !banner.starts_at || new Date(banner.starts_at).getTime() <= now)
+      .filter(banner => !banner.ends_at || new Date(banner.ends_at).getTime() >= now)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    res.json(banners);
+  } catch (err) {
+    console.error("Public Banner Fetch Error:", err);
+    res.status(500).json({ message: "Error fetching home banners" });
+  }
+});
+
+app.get("/api/admin/banners", adminAuth, async (req, res) => {
+  try {
+    const data = await ddbDocClient.send(new ScanCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      FilterExpression: "#type = :banner",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":banner": "home_banner" },
+    }));
+    res.json((data.Items || []).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)));
+  } catch (err) {
+    console.error("Admin Banner Fetch Error:", err);
+    res.status(500).json({ message: "Error fetching banners" });
+  }
+});
+
+app.post("/api/admin/banners", adminAuth, async (req, res) => {
+  const {
+    bannerId, title, banner_kind = "general", desktop_image, mobile_image,
+    alt_text = "", headline = "", subheading = "", cta_label = "",
+    link_url = "", active = true, starts_at = null, ends_at = null, sort_order = 0,
+  } = req.body;
+
+  if (!title?.trim() || !desktop_image) {
+    return res.status(400).json({ message: "Banner title and desktop image are required" });
+  }
+  if (starts_at && ends_at && new Date(starts_at) > new Date(ends_at)) {
+    return res.status(400).json({ message: "Banner end date must be after its start date" });
+  }
+
+  const id = bannerId || `BANNER#${uuidv4()}`;
+  let existing;
+  if (bannerId) {
+    const result = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: bannerId },
+    }));
+    existing = result.Item;
+  }
+  const banner = {
+    suitId: id,
+    type: "home_banner",
+    title: title.trim().slice(0, 100),
+    banner_kind,
+    desktop_image,
+    mobile_image: mobile_image || desktop_image,
+    alt_text: String(alt_text).trim().slice(0, 160),
+    headline: String(headline).trim().slice(0, 100),
+    subheading: String(subheading).trim().slice(0, 180),
+    cta_label: String(cta_label).trim().slice(0, 40),
+    link_url: String(link_url).trim().slice(0, 500),
+    active: Boolean(active),
+    starts_at: starts_at || null,
+    ends_at: ends_at || null,
+    sort_order: Number(sort_order) || 0,
+    created_at: existing?.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    await ddbDocClient.send(new PutCommand({ TableName: process.env.AWS_DYNAMODB_TABLE_NAME, Item: banner }));
+    res.status(bannerId ? 200 : 201).json(banner);
+  } catch (err) {
+    console.error("Banner Save Error:", err);
+    res.status(500).json({ message: "Error saving banner" });
+  }
+});
+
+app.delete("/api/admin/banners/:bannerId", adminAuth, async (req, res) => {
+  try {
+    await ddbDocClient.send(new DeleteCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: decodeURIComponent(req.params.bannerId) },
+    }));
+    res.json({ message: "Banner deleted" });
+  } catch (err) {
+    console.error("Banner Delete Error:", err);
+    res.status(500).json({ message: "Error deleting banner" });
   }
 });
 
@@ -992,6 +1140,39 @@ app.get("/api/admin/orders", adminAuth, async (req, res) => {
   } catch (err) {
     console.error("Fetch Orders Error:", err);
     res.status(500).json({ message: "Error fetching orders" });
+  }
+});
+
+// Update the operational state of a delivery expansion request.
+app.patch("/api/admin/delivery/demands/:demandId", adminAuth, async (req, res) => {
+  const allowedStatuses = ["New", "Contacted", "Planned", "Serviceable", "Closed"];
+  const { status, admin_notes = "" } = req.body;
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({ message: "Invalid delivery request status" });
+  }
+
+  try {
+    const result = await ddbDocClient.send(new UpdateCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: decodeURIComponent(req.params.demandId) },
+      UpdateExpression: "SET #status = :status, #notes = :notes, #updated = :updated",
+      ExpressionAttributeNames: {
+        "#status": "status",
+        "#notes": "admin_notes",
+        "#updated": "updated_at",
+      },
+      ExpressionAttributeValues: {
+        ":status": status,
+        ":notes": String(admin_notes).trim().slice(0, 500),
+        ":updated": new Date().toISOString(),
+      },
+      ReturnValues: "ALL_NEW",
+    }));
+    res.json(result.Attributes);
+  } catch (err) {
+    console.error("Delivery Demand Update Error:", err);
+    res.status(500).json({ message: "Could not update delivery request" });
   }
 });
 
