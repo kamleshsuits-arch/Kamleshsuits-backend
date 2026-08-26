@@ -1058,6 +1058,97 @@ app.get("/api/coupons", async (req, res) => {
 
 // --- HOME BANNER ROUTES ---
 
+// The product-photo carousel is intentionally stored separately from campaign
+// banners. It has one portrait image and two short, independently coloured
+// caption lines per item.
+app.get("/api/hero-images", async (req, res) => {
+  try {
+    const data = await ddbDocClient.send(new ScanCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      FilterExpression: "#type = :heroImage",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":heroImage": "home_hero_image" },
+    }));
+    res.json((data.Items || [])
+      .filter(item => item.active !== false)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)));
+  } catch (err) {
+    console.error("Public Hero Image Fetch Error:", err);
+    res.status(500).json({ message: "Error fetching home hero images" });
+  }
+});
+
+app.get("/api/admin/hero-images", adminAuth, async (req, res) => {
+  try {
+    const data = await ddbDocClient.send(new ScanCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      FilterExpression: "#type = :heroImage",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":heroImage": "home_hero_image" },
+    }));
+    res.json((data.Items || []).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)));
+  } catch (err) {
+    console.error("Admin Hero Image Fetch Error:", err);
+    res.status(500).json({ message: "Error fetching hero images" });
+  }
+});
+
+app.post("/api/admin/hero-images", adminAuth, async (req, res) => {
+  const {
+    heroImageId, image, line_one = "Featured piece", line_two = "",
+    line_one_color = "#FDE68A", line_two_color = "#FFFFFF",
+    alt_text = "", active = true, sort_order = 0,
+  } = req.body;
+
+  if (!image) return res.status(400).json({ message: "Hero image is required" });
+
+  const id = heroImageId || `HERO_IMAGE#${uuidv4()}`;
+  let existing;
+  if (heroImageId) {
+    const result = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: heroImageId },
+    }));
+    existing = result.Item;
+  }
+
+  const heroImage = {
+    suitId: id,
+    type: "home_hero_image",
+    image,
+    line_one: String(line_one ?? '').trim().slice(0, 60),
+    line_two: String(line_two ?? '').trim().slice(0, 100),
+    line_one_color: /^#[0-9a-f]{6}$/i.test(line_one_color) ? line_one_color.toUpperCase() : "#FDE68A",
+    line_two_color: /^#[0-9a-f]{6}$/i.test(line_two_color) ? line_two_color.toUpperCase() : "#FFFFFF",
+    alt_text: String(alt_text ?? '').trim().slice(0, 160),
+    active: Boolean(active),
+    sort_order: Number(sort_order) || 0,
+    created_at: existing?.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    await ddbDocClient.send(new PutCommand({ TableName: process.env.AWS_DYNAMODB_TABLE_NAME, Item: heroImage }));
+    res.status(heroImageId ? 200 : 201).json(heroImage);
+  } catch (err) {
+    console.error("Hero Image Save Error:", err);
+    res.status(500).json({ message: "Error saving hero image" });
+  }
+});
+
+app.delete("/api/admin/hero-images/:heroImageId", adminAuth, async (req, res) => {
+  try {
+    await ddbDocClient.send(new DeleteCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: decodeURIComponent(req.params.heroImageId) },
+    }));
+    res.json({ message: "Hero image deleted" });
+  } catch (err) {
+    console.error("Hero Image Delete Error:", err);
+    res.status(500).json({ message: "Error deleting hero image" });
+  }
+});
+
 // Public, scheduled banner feed used by the home hero.
 app.get("/api/banners", async (req, res) => {
   try {
