@@ -1019,7 +1019,7 @@ app.get("/api/admin/banners", adminAuth, async (req, res) => {
 app.post("/api/admin/banners", adminAuth, async (req, res) => {
   const {
     bannerId, title, banner_kind = "general", desktop_image, mobile_image,
-    alt_text = "", headline = "", subheading = "", cta_label = "",
+    alt_text = "", headline = "", animated_words = [], headline_suffix = "", subheading = "", cta_label = "",
     link_url = "", active = true, starts_at = null, ends_at = null, sort_order = 0,
   } = req.body;
 
@@ -1048,6 +1048,11 @@ app.post("/api/admin/banners", adminAuth, async (req, res) => {
     mobile_image: mobile_image || desktop_image,
     alt_text: String(alt_text).trim().slice(0, 160),
     headline: String(headline).trim().slice(0, 100),
+    animated_words: (Array.isArray(animated_words) ? animated_words : String(animated_words).split(','))
+      .map(word => String(word).trim().slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 12),
+    headline_suffix: String(headline_suffix).trim().slice(0, 100),
     subheading: String(subheading).trim().slice(0, 180),
     cta_label: String(cta_label).trim().slice(0, 40),
     link_url: String(link_url).trim().slice(0, 500),
