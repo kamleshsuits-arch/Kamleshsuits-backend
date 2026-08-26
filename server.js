@@ -1021,7 +1021,7 @@ app.post("/api/admin/banners", adminAuth, async (req, res) => {
     bannerId, title, banner_kind = "general", desktop_image, mobile_image,
     alt_text = "", headline = "", animated_words = [], headline_suffix = "",
     headline_color = "#FFFFFF", animated_word_color = "#FCD34D", headline_suffix_color = "#FFFFFF",
-    subheading = "", cta_label = "",
+    subheading = "", cta_label = "", cta_background_color = "#FFFFFF", cta_text_color = "#1C1917",
     link_url = "", active = true, starts_at = null, ends_at = null, sort_order = 0,
   } = req.body;
 
@@ -1044,23 +1044,25 @@ app.post("/api/admin/banners", adminAuth, async (req, res) => {
   const banner = {
     suitId: id,
     type: "home_banner",
-    title: title.trim().slice(0, 100),
-    banner_kind,
+    title: String(title ?? '').trim().slice(0, 100),
+    banner_kind: String(banner_kind ?? 'general').trim() || 'general',
     desktop_image,
     mobile_image: mobile_image || desktop_image,
-    alt_text: String(alt_text).trim().slice(0, 160),
-    headline: String(headline).trim().slice(0, 100),
+    alt_text: String(alt_text ?? '').trim().slice(0, 160),
+    headline: String(headline ?? '').trim().slice(0, 100),
     animated_words: (Array.isArray(animated_words) ? animated_words : String(animated_words).split(','))
-      .map(word => String(word).trim().slice(0, 40))
+      .map(word => String(word ?? '').trim().slice(0, 40))
       .filter(Boolean)
       .slice(0, 12),
-    headline_suffix: String(headline_suffix).trim().slice(0, 100),
+    headline_suffix: String(headline_suffix ?? '').trim().slice(0, 100),
     headline_color: /^#[0-9a-f]{6}$/i.test(headline_color) ? headline_color.toUpperCase() : "#FFFFFF",
     animated_word_color: /^#[0-9a-f]{6}$/i.test(animated_word_color) ? animated_word_color.toUpperCase() : "#FCD34D",
     headline_suffix_color: /^#[0-9a-f]{6}$/i.test(headline_suffix_color) ? headline_suffix_color.toUpperCase() : "#FFFFFF",
-    subheading: String(subheading).trim().slice(0, 180),
-    cta_label: String(cta_label).trim().slice(0, 40),
-    link_url: String(link_url).trim().slice(0, 500),
+    subheading: String(subheading ?? '').trim().slice(0, 180),
+    cta_label: String(cta_label ?? '').trim().slice(0, 40),
+    cta_background_color: /^#[0-9a-f]{6}$/i.test(cta_background_color) ? cta_background_color.toUpperCase() : "#FFFFFF",
+    cta_text_color: /^#[0-9a-f]{6}$/i.test(cta_text_color) ? cta_text_color.toUpperCase() : "#1C1917",
+    link_url: String(link_url ?? '').trim().slice(0, 500),
     active: Boolean(active),
     starts_at: starts_at || null,
     ends_at: ends_at || null,
