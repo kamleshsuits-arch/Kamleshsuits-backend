@@ -1100,7 +1100,8 @@ app.post("/api/admin/banners", adminAuth, async (req, res) => {
     bannerId, title, banner_kind = "general", desktop_image, mobile_image,
     alt_text = "", headline = "", animated_words = [], headline_suffix = "",
     headline_color = "#FFFFFF", animated_word_color = "#FCD34D", headline_suffix_color = "#FFFFFF",
-    subheading = "", cta_label = "", cta_background_color = "#FFFFFF", cta_text_color = "#1C1917",
+    subheading = "", subheading_color = "#FFFFFF", overlay_color = "#000000", overlay_opacity = 78,
+    cta_label = "", cta_background_color = "#FFFFFF", cta_text_color = "#1C1917",
     link_url = "", active = true, starts_at = null, ends_at = null, sort_order = 0,
   } = req.body;
 
@@ -1137,7 +1138,10 @@ app.post("/api/admin/banners", adminAuth, async (req, res) => {
     headline_color: /^#[0-9a-f]{6}$/i.test(headline_color) ? headline_color.toUpperCase() : "#FFFFFF",
     animated_word_color: /^#[0-9a-f]{6}$/i.test(animated_word_color) ? animated_word_color.toUpperCase() : "#FCD34D",
     headline_suffix_color: /^#[0-9a-f]{6}$/i.test(headline_suffix_color) ? headline_suffix_color.toUpperCase() : "#FFFFFF",
-    subheading: String(subheading ?? '').trim().slice(0, 180),
+    subheading: String(subheading ?? '').trim().slice(0, 280),
+    subheading_color: /^#[0-9a-f]{6}$/i.test(subheading_color) ? subheading_color.toUpperCase() : "#FFFFFF",
+    overlay_color: /^#[0-9a-f]{6}$/i.test(overlay_color) ? overlay_color.toUpperCase() : "#000000",
+    overlay_opacity: Math.min(95, Math.max(20, Number(overlay_opacity) || 78)),
     cta_label: String(cta_label ?? '').trim().slice(0, 40),
     cta_background_color: /^#[0-9a-f]{6}$/i.test(cta_background_color) ? cta_background_color.toUpperCase() : "#FFFFFF",
     cta_text_color: /^#[0-9a-f]{6}$/i.test(cta_text_color) ? cta_text_color.toUpperCase() : "#1C1917",
