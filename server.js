@@ -281,6 +281,17 @@ const validateProduct = (data) => {
   const errors = [];
   const productCategory = String(data.product_category || DEFAULT_PRODUCT_CATEGORY).trim();
   const categoryDefinition = getProductCategory(productCategory);
+  const variants = Array.isArray(data.variants)
+    ? data.variants.slice(0, 6).map((variant, index) => ({
+        id: String(variant?.id || `variant-${index + 1}`).trim(),
+        colorName: String(variant?.colorName || '').trim(),
+        colorHex: /^#[0-9a-f]{6}$/i.test(String(variant?.colorHex || '')) ? String(variant.colorHex).toUpperCase() : '#808080',
+        images: Array.isArray(variant?.images)
+          ? variant.images.slice(0, 6).map(image => String(image || '').trim()).filter(Boolean)
+          : [],
+        stock: Math.max(0, parseInt(variant?.stock) || 0)
+      })).filter(variant => variant.images.length > 0)
+    : [];
   
   const sanitized = {
     title: String(data.title || "Untitled Asset").trim(),
@@ -295,6 +306,7 @@ const validateProduct = (data) => {
     image: String(data.image || ""),
     images: Array.isArray(data.images) ? data.images : [],
     colors: Array.isArray(data.colors) ? data.colors : [],
+    variants,
     categories: Array.isArray(data.categories) ? data.categories : [],
     fabric_family: String(data.fabric_family || "").trim(),
     fabric_category: String(data.fabric_category || "").trim(),
@@ -315,6 +327,9 @@ const validateProduct = (data) => {
   }
   if (categoryDefinition?.requiresFabric && (!sanitized.fabric_family || !sanitized.fabric_category)) {
     errors.push("Fabric family and fabric type are required for suits");
+  }
+  if (Array.isArray(data.variants) && variants.some(variant => !variant.colorName)) {
+    errors.push("Every product variant must have a colour name");
   }
   
   return { sanitized, errors };
@@ -410,7 +425,7 @@ app.put("/api/admin/products/:id", adminAuth, async (req, res) => {
   const updates = {};
   const validFields = [
     'title', 'description', 'price', 'discount', 'mrp', 'stock', 
-    'type', 'product_category', 'product_subcategory', 'image', 'images', 'colors', 'categories',
+    'type', 'product_category', 'product_subcategory', 'image', 'images', 'colors', 'variants', 'categories',
     'fabric_family', 'fabric_category', 'session', 'rating', 'reviews'
   ];
 
