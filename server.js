@@ -292,6 +292,16 @@ const validateProduct = (data) => {
         stock: Math.max(0, parseInt(variant?.stock) || 0)
       })).filter(variant => variant.images.length > 0)
     : [];
+  const rawHeroFeature = data.hero_feature && typeof data.hero_feature === 'object' ? data.hero_feature : {};
+  const heroFeature = {
+    enabled: Boolean(rawHeroFeature.enabled),
+    heroImageId: String(rawHeroFeature.heroImageId || '').trim(),
+    image: String(rawHeroFeature.image || '').trim(),
+    line_one: String(rawHeroFeature.line_one || 'Featured piece').trim().slice(0, 60),
+    line_two: String(rawHeroFeature.line_two || '').trim().slice(0, 100),
+    line_one_color: /^#[0-9a-f]{6}$/i.test(String(rawHeroFeature.line_one_color || '')) ? String(rawHeroFeature.line_one_color).toUpperCase() : '#FDE68A',
+    line_two_color: /^#[0-9a-f]{6}$/i.test(String(rawHeroFeature.line_two_color || '')) ? String(rawHeroFeature.line_two_color).toUpperCase() : '#FFFFFF',
+  };
   
   const sanitized = {
     title: String(data.title || "Untitled Asset").trim(),
@@ -307,6 +317,9 @@ const validateProduct = (data) => {
     images: Array.isArray(data.images) ? data.images : [],
     colors: Array.isArray(data.colors) ? data.colors : [],
     variants,
+    hero_feature: heroFeature,
+    featured_on_home: Boolean(data.featured_on_home),
+    hero_image_id: String(data.hero_image_id || '').trim(),
     categories: Array.isArray(data.categories) ? data.categories : [],
     fabric_family: String(data.fabric_family || "").trim(),
     fabric_category: String(data.fabric_category || "").trim(),
@@ -425,7 +438,7 @@ app.put("/api/admin/products/:id", adminAuth, async (req, res) => {
   const updates = {};
   const validFields = [
     'title', 'description', 'price', 'discount', 'mrp', 'stock', 
-    'type', 'product_category', 'product_subcategory', 'image', 'images', 'colors', 'variants', 'categories',
+    'type', 'product_category', 'product_subcategory', 'image', 'images', 'colors', 'variants', 'hero_feature', 'featured_on_home', 'hero_image_id', 'categories',
     'fabric_family', 'fabric_category', 'session', 'rating', 'reviews'
   ];
 
@@ -1084,9 +1097,31 @@ app.get("/api/hero-images", async (req, res) => {
       ExpressionAttributeNames: { "#type": "type" },
       ExpressionAttributeValues: { ":heroImage": "home_hero_image" },
     }));
-    res.json((data.Items || [])
+    const heroImages = (data.Items || [])
       .filter(item => item.active !== false)
-      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)));
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    const linkedProductIds = [...new Set(heroImages.map(item => item.product_id).filter(Boolean))].slice(0, 100);
+    let availableProductIds = new Set();
+
+    if (linkedProductIds.length) {
+      const products = await ddbDocClient.send(new BatchGetCommand({
+        RequestItems: {
+          [process.env.AWS_DYNAMODB_TABLE_NAME]: {
+            Keys: linkedProductIds.map(suitId => ({ suitId })),
+            ProjectionExpression: 'suitId, #type',
+            ExpressionAttributeNames: { '#type': 'type' },
+          },
+        },
+      }));
+      availableProductIds = new Set((products.Responses?.[process.env.AWS_DYNAMODB_TABLE_NAME] || [])
+        .filter(product => ['product', 'suit'].includes(product.type))
+        .map(product => product.suitId));
+    }
+
+    res.json(heroImages.map(item => ({
+      ...item,
+      product_path: item.product_id && availableProductIds.has(item.product_id) ? `/product/${item.product_id}` : '',
+    })));
   } catch (err) {
     console.error("Public Hero Image Fetch Error:", err);
     res.status(500).json({ message: "Error fetching home hero images" });
@@ -1112,12 +1147,22 @@ app.post("/api/admin/hero-images", adminAuth, async (req, res) => {
   const {
     heroImageId, image, line_one = "Featured piece", line_two = "",
     line_one_color = "#FDE68A", line_two_color = "#FFFFFF",
-    alt_text = "", active = true, sort_order = 0,
+    alt_text = "", active = true, sort_order = 0, product_id = "",
   } = req.body;
 
   if (!image) return res.status(400).json({ message: "Hero image is required" });
 
   const id = heroImageId || `HERO_IMAGE#${uuidv4()}`;
+  const linkedProductId = String(product_id || '').trim();
+  if (linkedProductId) {
+    const linkedProduct = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: linkedProductId },
+    }));
+    if (!linkedProduct.Item || !['product', 'suit'].includes(linkedProduct.Item.type)) {
+      return res.status(400).json({ message: 'The selected product is no longer listed in inventory' });
+    }
+  }
   let existing;
   if (heroImageId) {
     const result = await ddbDocClient.send(new GetCommand({
@@ -1138,6 +1183,7 @@ app.post("/api/admin/hero-images", adminAuth, async (req, res) => {
     alt_text: String(alt_text ?? '').trim().slice(0, 160),
     active: Boolean(active),
     sort_order: Number(sort_order) || 0,
+    product_id: linkedProductId,
     created_at: existing?.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
