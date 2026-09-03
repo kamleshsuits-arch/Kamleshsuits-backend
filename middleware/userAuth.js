@@ -31,3 +31,14 @@ export const userAuth = async (req, res, next) => {
     return res.status(401).json({ message: "Invalid or expired user token" });
   }
 };
+
+export const optionalUserAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return next();
+  try {
+    req.user = await verifier.verify(authHeader.slice(7));
+    return next();
+  } catch {
+    return res.status(401).json({ message: 'Invalid or expired user token' });
+  }
+};

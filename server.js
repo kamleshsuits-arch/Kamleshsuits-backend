@@ -18,6 +18,9 @@ import { userAuth } from "./middleware/userAuth.js";
 import { uploadFileToS3 } from "./libs/s3Service.js";
 import { DEFAULT_PRODUCT_CATEGORY, PRODUCT_TAXONOMY, getProductCategory } from "./config/productTaxonomy.js";
 import { sendOrderNotification } from "./libs/emailService.js";
+import { sendOrderStatusWhatsApp } from "./libs/whatsappService.js";
+import { sendOrderStatusPush } from "./libs/pushNotificationService.js";
+import { registerPwaRoutes } from "./routes/pwaRoutes.js";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 dotenv.config();
@@ -28,6 +31,7 @@ const PORT = process.env.PORT || 5000;
 app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
+registerPwaRoutes(app);
 
 // Multer setup for image uploads (memory storage)
 const upload = multer({ storage: multer.memoryStorage() });
@@ -551,7 +555,7 @@ app.post("/api/user/profile", userAuth, async (req, res) => {
 
 // --- ORDER ROUTES ---
 
-const createOrderRecord = async ({ items, address, subtotal, total, paymentMethod, user = null }) => {
+const createOrderRecord = async ({ items, address, subtotal, total, paymentMethod, installationId = '', user = null }) => {
   const orderId = `#ORD-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
   const trackingToken = randomBytes(24).toString("hex");
   const trackingTokenHash = createHash("sha256").update(trackingToken).digest("hex");
@@ -565,6 +569,7 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     user_name: address.name,
     user_phone: address.phone,
     guest_order: !user,
+    installation_id: String(installationId || '').slice(0, 80),
     items,
     address,
     subtotal: Number(subtotal),
@@ -572,7 +577,8 @@ const createOrderRecord = async ({ items, address, subtotal, total, paymentMetho
     paymentMethod: paymentMethod || "cod",
     paymentStatus: "Unpaid",
     status: "Awaiting Confirmation",
-    confirmationMethod: "Store phone call",
+    whatsappOptIn: address.whatsappOptIn === true,
+    confirmationMethod: address.whatsappOptIn === true ? "Store phone call and WhatsApp" : "Store phone call",
     trackingTokenHash,
     created_at: now,
     updated_at: now,
@@ -655,17 +661,19 @@ const validateOrderRequest = ({ items, address, total }) => {
 
 // Guest checkout: the store calls the customer before confirming fulfilment.
 app.post("/api/orders", async (req, res) => {
-  const { items, address, subtotal, total, paymentMethod } = req.body;
+  const { items, address, subtotal, total, paymentMethod, installationId } = req.body;
   const validationError = validateOrderRequest({ items, address, total });
   if (validationError) return res.status(400).json({ message: validationError });
 
   try {
-    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod });
+    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod, installationId });
+    const pushNotification = await sendOrderStatusPush(order);
     res.status(201).json({
       message: "Order request received. The store will call the customer to confirm it.",
       orderId: order.orderId,
       status: order.status,
       trackingToken,
+      pushNotification,
     });
   } catch (err) {
     console.error("Guest Order Placement Error:", err);
@@ -675,12 +683,13 @@ app.post("/api/orders", async (req, res) => {
 
 // Place New Order
 app.post("/api/user/orders", userAuth, async (req, res) => {
-  const { items, address, subtotal, total, paymentMethod } = req.body;
+  const { items, address, subtotal, total, paymentMethod, installationId } = req.body;
   const validationError = validateOrderRequest({ items, address, total });
   if (validationError) return res.status(400).json({ message: validationError });
 
   try {
-    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod, user: req.user });
+    const { order, trackingToken } = await createOrderRecord({ items, address, subtotal, total, paymentMethod, installationId, user: req.user });
+    const pushNotification = await sendOrderStatusPush(order);
     
     // 2. Send Email Notifications (Fire and forget or wait depending on reliability needs)
     // We wait here to ensure we can tell the user if something went wrong with the core flow
@@ -703,7 +712,8 @@ app.post("/api/user/orders", userAuth, async (req, res) => {
       orderId: order.orderId,
       status: order.status,
       trackingToken,
-      emailSent: emailResult.success 
+      emailSent: emailResult.success,
+      pushNotification,
     });
   } catch (err) {
     console.error("Order Placement Error:", err);
@@ -1428,7 +1438,7 @@ app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
   const allowedStatuses = ["Awaiting Confirmation", "Confirmed", "Shipped", "Delivered", "Cancelled"];
   const allowedPaymentStatuses = ["Unpaid", "Pending", "Paid", "Refunded"];
   const allowedPaymentMethods = ["cod", "cash", "upi", "phonepe", "bank_transfer", "card", "other"];
-  const { status, paymentStatus, paymentMethod } = req.body;
+  const { status, paymentStatus, paymentMethod, notifyCustomer = true } = req.body;
 
   if (!allowedStatuses.includes(status)) {
     return res.status(400).json({ message: "Invalid order status" });
@@ -1484,7 +1494,13 @@ app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
       ExpressionAttributeValues: values,
       ReturnValues: "ALL_NEW",
     }));
-    res.json(result.Attributes);
+    const whatsappNotification = notifyCustomer === false
+      ? { sent: false, reason: "notification_not_requested" }
+      : await sendOrderStatusWhatsApp(result.Attributes);
+    const pushNotification = notifyCustomer === false
+      ? { configured: true, sent: 0, reason: "notification_not_requested" }
+      : await sendOrderStatusPush(result.Attributes);
+    res.json({ ...result.Attributes, whatsappNotification, pushNotification });
   } catch (err) {
     console.error("Order Status Update Error:", err);
     res.status(500).json({ message: "Could not update order status" });
