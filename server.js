@@ -27,7 +27,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const STOREFRONT_URL = (process.env.FRONTEND_URL || "https://kamleshsuits-frontend.vercel.app").replace(/\/$/, "");
+const STOREFRONT_URL = (process.env.FRONTEND_URL || "https://kamleshsuits.vercel.app").replace(/\/$/, "");
 
 app.set("trust proxy", 1);
 app.use(cors());
