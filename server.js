@@ -359,6 +359,102 @@ app.get("/api/product-taxonomy", (req, res) => {
   res.json({ version: 1, defaultCategory: DEFAULT_PRODUCT_CATEGORY, categories: PRODUCT_TAXONOMY });
 });
 
+const escapeHtml = value => String(value ?? "")
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;")
+  .replaceAll("'", "&#039;");
+
+// Social networks generally do not execute the storefront's React code. This
+// lightweight HTML response exposes product metadata in the initial response,
+// then sends real shoppers to the canonical product page in their browser.
+app.get("/api/share/product/:id", async (req, res) => {
+  const productId = String(req.params.id || "");
+  const canonicalUrl = `https://kamleshsuits.com/product/${encodeURIComponent(productId)}`;
+
+  try {
+    const data = await ddbDocClient.send(new GetCommand({
+      TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
+      Key: { suitId: productId },
+    }));
+
+    if (!data.Item) return res.redirect(302, canonicalUrl);
+
+    const product = data.Item;
+    const title = product.title || "Kamlesh Suits Collection";
+    const rawDescription = product.description || `Shop ${title} at Kamlesh Suits. Premium Indian ethnic wear delivered across India.`;
+    const description = String(rawDescription).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+    const rawImage = product.image || product.images?.[0] || product.variants?.find(variant => variant.images?.[0])?.images?.[0] || "/icons/pwa-512.png";
+    const image = String(rawImage).startsWith("http")
+      ? String(rawImage)
+      : `https://kamleshsuits.com${String(rawImage).startsWith("/") ? "" : "/"}${rawImage}`;
+    const price = Number(product.price || 0);
+    const stock = Array.isArray(product.variants) && product.variants.length
+      ? product.variants.reduce((sum, variant) => sum + Number(variant.stock || 0), 0)
+      : Number(product.stock);
+    const isOutOfStock = Number.isFinite(stock) && stock <= 0;
+    const availability = isOutOfStock ? "out of stock" : "in stock";
+    const schema = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: title,
+      image: [image],
+      description,
+      sku: product.suitId,
+      brand: { "@type": "Brand", name: "Kamlesh Suits" },
+      offers: {
+        "@type": "Offer",
+        url: canonicalUrl,
+        priceCurrency: "INR",
+        price,
+        availability: isOutOfStock ? "https://schema.org/OutOfStock" : "https://schema.org/InStock",
+        itemCondition: "https://schema.org/NewCondition",
+      },
+    }).replaceAll("<", "\\u003c");
+    const redirectTarget = JSON.stringify(canonicalUrl).replaceAll("<", "\\u003c");
+
+    res
+      .set("Cache-Control", "public, max-age=0, s-maxage=300, stale-while-revalidate=86400")
+      .type("html")
+      .send(`<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} | Kamlesh Suits</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <link rel="canonical" href="${escapeHtml(canonicalUrl)}">
+  <link rel="me" href="https://www.instagram.com/kamleshsuits/">
+  <meta property="og:locale" content="en_IN">
+  <meta property="og:type" content="product">
+  <meta property="og:site_name" content="Kamlesh Suits">
+  <meta property="og:title" content="${escapeHtml(title)} | Kamlesh Suits">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  <meta property="og:url" content="${escapeHtml(canonicalUrl)}">
+  <meta property="og:image" content="${escapeHtml(image)}">
+  <meta property="og:image:secure_url" content="${escapeHtml(image)}">
+  <meta property="og:image:alt" content="${escapeHtml(title)} by Kamlesh Suits">
+  <meta property="product:price:amount" content="${escapeHtml(price)}">
+  <meta property="product:price:currency" content="INR">
+  <meta property="product:availability" content="${availability}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtml(title)} | Kamlesh Suits">
+  <meta name="twitter:description" content="${escapeHtml(description)}">
+  <meta name="twitter:image" content="${escapeHtml(image)}">
+  <meta name="twitter:image:alt" content="${escapeHtml(title)} by Kamlesh Suits">
+  <script type="application/ld+json">${schema}</script>
+  <script>window.location.replace(${redirectTarget});</script>
+</head>
+<body><p>Opening <a href="${escapeHtml(canonicalUrl)}">${escapeHtml(title)} at Kamlesh Suits</a>…</p></body>
+</html>`);
+  } catch (error) {
+    console.error("Product share metadata error:", error);
+    res.redirect(302, canonicalUrl);
+  }
+});
+
 // Get all products
 app.get("/api/products", async (req, res) => {
   const params = {
