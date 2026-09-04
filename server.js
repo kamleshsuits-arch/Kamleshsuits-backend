@@ -27,6 +27,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const STOREFRONT_URL = (process.env.FRONTEND_URL || "https://kamleshsuits-frontend.vercel.app").replace(/\/$/, "");
 
 app.set("trust proxy", 1);
 app.use(cors());
@@ -371,7 +372,7 @@ const escapeHtml = value => String(value ?? "")
 // then sends real shoppers to the canonical product page in their browser.
 app.get("/api/share/product/:id", async (req, res) => {
   const productId = String(req.params.id || "");
-  const canonicalUrl = `https://kamleshsuits.com/product/${encodeURIComponent(productId)}`;
+  const canonicalUrl = `${STOREFRONT_URL}/product/${encodeURIComponent(productId)}`;
 
   try {
     const data = await ddbDocClient.send(new GetCommand({
@@ -388,7 +389,7 @@ app.get("/api/share/product/:id", async (req, res) => {
     const rawImage = product.image || product.images?.[0] || product.variants?.find(variant => variant.images?.[0])?.images?.[0] || "/icons/pwa-512.png";
     const image = String(rawImage).startsWith("http")
       ? String(rawImage)
-      : `https://kamleshsuits.com${String(rawImage).startsWith("/") ? "" : "/"}${rawImage}`;
+      : `${STOREFRONT_URL}${String(rawImage).startsWith("/") ? "" : "/"}${rawImage}`;
     const price = Number(product.price || 0);
     const stock = Array.isArray(product.variants) && product.variants.length
       ? product.variants.reduce((sum, variant) => sum + Number(variant.stock || 0), 0)
