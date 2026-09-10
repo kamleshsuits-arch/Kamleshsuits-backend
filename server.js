@@ -1571,15 +1571,18 @@ app.patch("/api/admin/orders/:orderId/status", adminAuth, async (req, res) => {
     names["#paidAt"] = "paid_at";
     values[":paidAt"] = new Date().toISOString();
     updateExpression += ", #paidAt = if_not_exists(#paidAt, :paidAt)";
-  } else if (paymentStatus) {
-    names["#paidAt"] = "paid_at";
-    updateExpression += " REMOVE #paidAt";
   }
 
   if (status === "Confirmed") {
     names["#confirmedAt"] = "confirmed_at";
     values[":confirmedAt"] = new Date().toISOString();
     updateExpression += ", #confirmedAt = :confirmedAt";
+  }
+
+  // Finish all SET assignments before starting a different DynamoDB clause.
+  if (paymentStatus && paymentStatus !== "Paid") {
+    names["#paidAt"] = "paid_at";
+    updateExpression += " REMOVE #paidAt";
   }
 
   try {
