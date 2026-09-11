@@ -1,6 +1,7 @@
 import webpush from 'web-push';
 import { DeleteCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ddbDocClient } from './awsClient.js';
+import { recipientId } from './pushAudience.js';
 
 const tableName = () => process.env.AWS_DYNAMODB_TABLE_NAME;
 
@@ -38,6 +39,7 @@ export const sendPushNotification = async ({ title, body, url = '/', tag = 'kaml
   if (!configureWebPush()) return { configured: false, sent: 0, failed: 0 };
 
   const subscriptions = (await listPushSubscriptions()).filter(subscription => {
+    if (audience.mode === 'selected') return audience.recipientIds?.includes(recipientId(subscription)) === true;
     if (audience.userId) return subscription.user_id === audience.userId;
     if (audience.installationId) return subscription.installation_id === audience.installationId;
     return true;

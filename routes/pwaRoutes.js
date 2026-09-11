@@ -4,7 +4,8 @@ import { DeleteCommand, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib
 import { ddbDocClient } from '../libs/awsClient.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { optionalUserAuth } from '../middleware/userAuth.js';
-import { isPushConfigured, sendPushNotification } from '../libs/pushNotificationService.js';
+import { isPushConfigured, sendPushNotification, listPushSubscriptions } from '../libs/pushNotificationService.js';
+import { buildRecipients, parseAudience } from '../libs/pushAudience.js';
 
 const validInstallationId = value => /^[a-zA-Z0-9-]{16,80}$/.test(String(value || ''));
 const safeText = (value, max) => String(value || '').trim().slice(0, max);
@@ -111,13 +112,25 @@ export const registerPwaRoutes = app => {
     res.json(notifications.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 100));
   }));
 
+  app.get('/api/admin/notifications/recipients', adminAuth, safeRoute(async (req, res) => {
+    res.json(buildRecipients(await listPushSubscriptions()));
+  }));
+
   app.post('/api/admin/notifications', adminAuth, safeRoute(async (req, res) => {
     const title = safeText(req.body.title, 80);
     const body = safeText(req.body.body, 220);
     const url = safeText(req.body.url || '/', 500);
     if (!title || !body || !url.startsWith('/')) return res.status(400).json({ message: 'Title, message, and an internal link are required' });
 
-    const delivery = await sendPushNotification({ title, body, url, tag: `broadcast-${Date.now()}` });
+    let audience;
+    try { audience = parseAudience(req.body.audience); }
+    catch (error) { return res.status(400).json({ message: error.message }); }
+    if (!isPushConfigured()) return res.status(503).json({ message: 'Push notifications are not configured.' });
+    const recipients = buildRecipients(await listPushSubscriptions());
+    if (audience.mode === 'selected' && audience.recipientIds.some(id => !recipients.some(item => item.id === id))) {
+      return res.status(400).json({ message: 'Some selected recipients are no longer available. Refresh the recipient list.' });
+    }
+    const delivery = await sendPushNotification({ title, body, url, audience, tag: `broadcast-${Date.now()}` });
     const notification = {
       suitId: `NOTIFICATION#${uuidv4()}`,
       type: 'admin_notification',
@@ -125,6 +138,7 @@ export const registerPwaRoutes = app => {
       body,
       url,
       created_by: req.user.email || req.user.sub,
+      audience,
       delivery,
       created_at: new Date().toISOString(),
     };
