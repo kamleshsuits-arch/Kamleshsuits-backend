@@ -882,14 +882,15 @@ app.post("/api/orders/lookup-by-phone", async (req, res) => {
     }));
 
     let items = [];
-    const refs = (index.Item?.order_refs || []).slice(-25);
+    const refs = [...new Map((index.Item?.order_refs || []).filter(ref => ref?.orderId).map(ref => [ref.orderId, ref])).values()].slice(-25);
     if (refs.length) {
       const currentOrders = await ddbDocClient.send(new BatchGetCommand({
         RequestItems: {
           [tableName]: {
             Keys: refs.map(ref => ({ suitId: `ORDER#${ref.orderId}` })),
-            ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, total",
-            ExpressionAttributeNames: { "#status": "status" },
+            ConsistentRead: true,
+            ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, #total",
+            ExpressionAttributeNames: { "#status": "status", "#total": "total" },
           },
         },
       }));
@@ -900,8 +901,8 @@ app.post("/api/orders/lookup-by-phone", async (req, res) => {
         TableName: tableName,
         FilterExpression: "#type = :orderType AND user_phone = :phone",
         ExpressionAttributeValues: { ":orderType": "order", ":phone": phone },
-        ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, total",
-        ExpressionAttributeNames: { "#type": "type", "#status": "status" },
+        ProjectionExpression: "orderId, created_at, updated_at, #status, paymentStatus, #total",
+        ExpressionAttributeNames: { "#type": "type", "#status": "status", "#total": "total" },
       }));
       items = legacy.Items || [];
     }
