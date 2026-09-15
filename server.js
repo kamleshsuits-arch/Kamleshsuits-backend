@@ -20,12 +20,14 @@ import { DEFAULT_PRODUCT_CATEGORY, PRODUCT_TAXONOMY, getProductCategory } from "
 import { sendOrderNotification } from "./libs/emailService.js";
 import { sendOrderStatusWhatsApp } from "./libs/whatsappService.js";
 import { sendOrderStatusPush } from "./libs/pushNotificationService.js";
+import { inventoryNotificationWrites, notificationWrite, voucherMessage } from "./libs/catalogNotifications.js";
+import { processAutomaticNotifications, startAutomaticNotifications } from "./libs/automaticNotificationWorker.js";
 import { registerPwaRoutes } from "./routes/pwaRoutes.js";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT || 5000;
 const STOREFRONT_URL = (process.env.FRONTEND_URL || "https://kamleshsuits.vercel.app").replace(/\/$/, "");
 
@@ -355,6 +357,19 @@ const validateProduct = (data) => {
 
 // --- PUBLIC ROUTES ---
 
+// The table also holds notification history; never assume the catalog fits in
+// one DynamoDB scan page as that history grows.
+const scanAllItems = async params => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddbDocClient.send(new ScanCommand({ ...params, ExclusiveStartKey }));
+    items.push(...(page.Items || []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+};
+
 // Public, versionable product taxonomy used by admin forms and storefront filters.
 app.get("/api/product-taxonomy", (req, res) => {
   res.json({ version: 1, defaultCategory: DEFAULT_PRODUCT_CATEGORY, categories: PRODUCT_TAXONOMY });
@@ -466,8 +481,7 @@ app.get("/api/products", async (req, res) => {
   };
 
   try {
-    const data = await ddbDocClient.send(new ScanCommand(params));
-    res.json(data.Items);
+    res.json(await scanAllItems(params));
   } catch (err) {
     console.error("DynamoDB Scan Error:", err);
     res.status(500).json({ message: "Error fetching products" });
@@ -514,7 +528,11 @@ app.post("/api/admin/products", adminAuth, async (req, res) => {
 
   console.log("Saving product to DynamoDB:", JSON.stringify(product, null, 2));
   try {
-    await ddbDocClient.send(new PutCommand(params));
+    await ddbDocClient.send(new TransactWriteCommand({ TransactItems: [
+      { Put: { ...params, ConditionExpression: 'attribute_not_exists(suitId)' } },
+      ...inventoryNotificationWrites([product], product.suitId),
+    ] }));
+    void processAutomaticNotifications();
     res.status(201).json(product);
   } catch (err) {
     console.error("DynamoDB Put Error:", err);
@@ -1024,8 +1042,14 @@ app.get("/api/admin/coupons", adminAuth, async (req, res) => {
 app.post("/api/admin/coupons", adminAuth, async (req, res) => {
   const { code, discount, type, min_purchase, usage_limit, expires_at, description, category_ids = [] } = req.body;
   
-  if (!code || !discount) {
+  if (typeof code !== 'string' || !code.trim() || code.length > 40 || !discount) {
     return res.status(400).json({ message: "Code and discount are required" });
+  }
+  if (type && !['flat', 'percent'].includes(type)) {
+    return res.status(400).json({ message: "Discount type must be flat or percent" });
+  }
+  if (expires_at && !Number.isFinite(Date.parse(expires_at))) {
+    return res.status(400).json({ message: "Enter a valid voucher expiry date" });
   }
   const discountValue = Number(discount);
   if (!Number.isFinite(discountValue) || discountValue <= 0 || (type === "percent" && discountValue > 100)) {
@@ -1042,10 +1066,12 @@ app.post("/api/admin/coupons", adminAuth, async (req, res) => {
     const existing = await ddbDocClient.send(new GetCommand({
       TableName: process.env.AWS_DYNAMODB_TABLE_NAME,
       Key: { suitId: couponKey },
+      ConsistentRead: true,
     }));
     existingCoupon = existing.Item;
   } catch (err) {
     console.error("Coupon lookup before save failed:", err);
+    return res.status(503).json({ message: "Could not check existing voucher. Please retry." });
   }
 
   const coupon = {
@@ -1070,7 +1096,16 @@ app.post("/api/admin/coupons", adminAuth, async (req, res) => {
   };
 
   try {
-    await ddbDocClient.send(new PutCommand(params));
+    if (existingCoupon) {
+      await ddbDocClient.send(new PutCommand(params));
+    } else {
+      const alert = notificationWrite(voucherMessage(coupon), 'voucher_launched', `${coupon.suitId}:${coupon.created_at}`);
+      await ddbDocClient.send(new TransactWriteCommand({ TransactItems: [
+        { Put: { ...params, ConditionExpression: 'attribute_not_exists(suitId)' } },
+        ...(alert ? [alert] : []),
+      ] }));
+      void processAutomaticNotifications();
+    }
     res.status(201).json(coupon);
   } catch (err) {
     res.status(500).json({ message: "Error saving coupon" });
@@ -1164,8 +1199,7 @@ app.get("/api/coupons", async (req, res) => {
   console.log(`[SERVICE_COUPONS] Scanning table: ${params.TableName}`);
 
   try {
-    const data = await ddbDocClient.send(new ScanCommand(params));
-    const items = data.Items || [];
+    const items = await scanAllItems(params);
     
     // Find active coupons using multiple detection strategies
     const now = new Date();
@@ -1613,6 +1647,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "Kamlesh Suits API" });
 });
 
-app.listen(PORT, () => {
+if (process.env.NODE_ENV !== 'test') app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startAutomaticNotifications();
 });

@@ -39,6 +39,7 @@ export const sendPushNotification = async ({ title, body, url = '/', tag = 'kaml
   if (!configureWebPush()) return { configured: false, sent: 0, failed: 0 };
 
   const subscriptions = (await listPushSubscriptions()).filter(subscription => {
+    if (audience.subscriptionIds) return audience.subscriptionIds.includes(subscription.suitId);
     if (audience.mode === 'selected') return audience.recipientIds?.includes(recipientId(subscription)) === true;
     if (audience.userId) return subscription.user_id === audience.userId;
     if (audience.installationId) return subscription.installation_id === audience.installationId;
@@ -47,28 +48,38 @@ export const sendPushNotification = async ({ title, body, url = '/', tag = 'kaml
   const payload = JSON.stringify({ title, body, url, tag, image, createdAt: new Date().toISOString() });
   let sent = 0;
   let failed = 0;
+  const retrySubscriptionIds = [];
 
-  await Promise.all(subscriptions.map(async record => {
+  const deliver = async record => {
     try {
-      await webpush.sendNotification(record.subscription, payload, { TTL: 60 * 60 * 24, urgency: 'high' });
+      await webpush.sendNotification(record.subscription, payload, { TTL: 60 * 60 * 24, urgency: 'high', timeout: 10000 });
       sent += 1;
+    } catch (error) {
+      failed += 1;
+      if ([404, 410].includes(error.statusCode)) {
+        try { await ddbDocClient.send(new DeleteCommand({ TableName: tableName(), Key: { suitId: record.suitId } })); }
+        catch { console.error('Expired push subscription cleanup failed'); }
+      } else {
+        retrySubscriptionIds.push(record.suitId);
+        console.error('Push delivery failed:', error.statusCode || error.name);
+      }
+      return;
+    }
+    // Metadata failures must not turn an accepted push into a delivery retry.
+    try {
       await ddbDocClient.send(new UpdateCommand({
         TableName: tableName(),
         Key: { suitId: record.suitId },
         UpdateExpression: 'SET last_notified_at = :now',
         ExpressionAttributeValues: { ':now': new Date().toISOString() },
       }));
-    } catch (error) {
-      failed += 1;
-      if ([404, 410].includes(error.statusCode)) {
-        await ddbDocClient.send(new DeleteCommand({ TableName: tableName(), Key: { suitId: record.suitId } }));
-      } else {
-        console.error('Push delivery failed:', error.statusCode || error.message);
-      }
-    }
-  }));
+    } catch { console.error('Push delivery timestamp update failed'); }
+  };
+  for (let offset = 0; offset < subscriptions.length; offset += 20) {
+    await Promise.all(subscriptions.slice(offset, offset + 20).map(deliver));
+  }
 
-  return { configured: true, subscribers: subscriptions.length, sent, failed };
+  return { configured: true, subscribers: subscriptions.length, sent, failed, retrySubscriptionIds };
 };
 
 const ORDER_MESSAGES = {
